@@ -57,19 +57,38 @@ class ExpressionEvaluator:
         }
 
     def evaluate_with_na_handling(self, expression: str, df: pd.DataFrame) -> pd.Series:
-        """Evaluate expression after handling NAs for specific columns."""
-        columns = re.findall(self.column_pattern, expression, re.IGNORECASE)
-        mask = pd.Series(True, index=df.index)
-        for col in columns:
-            col_name = self.get_column_case_insensitive(col)
-            mask &= ~df[col_name].isna()
+        """Evaluate expression so that if any column in a row is non-null, missing values are treated as 0.
         
-        filtered_df = df[mask].copy()
-        evaluator = ExpressionEvaluator(filtered_df)
+        If all involved columns are null for a row, the result for that row will be NaN.
+        """
+        # Find all columns involved in the expression
+        columns = re.findall(self.column_pattern, expression, re.IGNORECASE)
+        
+        # Get the actual column names (handling case-insensitivity)
+        cols_used = [self.get_column_case_insensitive(col) for col in columns]
+        
+        # Create a mask: True for rows where at least one involved column is non-null.
+        mask = ~df[cols_used].isna().all(axis=1)
+        
+        # Make a copy of the DataFrame for evaluation
+        eval_df = df.copy()
+        
+        # For rows where at least one column is non-null, fill missing values with 0.
+        eval_df.loc[mask, cols_used] = eval_df.loc[mask, cols_used].fillna(0)
+        
+        # Evaluate the expression only on rows that have at least one non-null value
+        evaluator = ExpressionEvaluator(eval_df.loc[mask])
         result = evaluator.evaluate_expression(expression)
-        full_result = pd.Series(0, index=df.index)
+        
+        # Build a full result Series aligned with the original DataFrame.
+        # For rows that were entirely null, we leave the result as NaN.
+        full_result = pd.Series(np.nan, index=df.index)
         full_result[result.index] = result
+        
         return full_result
+
+
+
 
     def get_column_case_insensitive(self, col: str) -> str:
         """Find column name ignoring case, extra spaces, and potential variations."""
@@ -582,23 +601,10 @@ def main(raw_data_path: str, segment_rules_path: str) -> pd.DataFrame:
     """Main function to process segmentation with rules from database."""
     try:
         print("Reading raw data...")
-        # Read CSV and handle column names
         df = pd.read_csv(raw_data_path)
-        
-        # Print all column names for debugging
         print("\nOriginal column names:")
         print(df.columns.tolist())
-        
-        # Clean column names - remove trailing/leading spaces and store original mapping
-        original_cols = df.columns.tolist()
         clean_cols = [col.strip() for col in df.columns]
-        col_mapping = dict(zip(clean_cols, original_cols))
-        
-        print("\nColumn mapping:")
-        for clean, orig in col_mapping.items():
-            print(f"{clean} -> {orig}")
-            
-        # Update DataFrame with clean column names
         df.columns = clean_cols
         print(f"\nLoaded {len(df)} rows from raw data")
         
@@ -606,21 +612,23 @@ def main(raw_data_path: str, segment_rules_path: str) -> pd.DataFrame:
         print("\nReading segment rules...")
         segment_df = pd.read_csv(segment_rules_path)
         
-        # Create segment rules dictionary
+        # Build segment_rules dictionary for all segments.
+        # (Assuming the CSV has one row with columns: Segment_Count, Segment_1, Segment_2, etc.)
         segment_rules = {}
-        for _, row in segment_df.iterrows():
-            if pd.notna(row['Segment_1']):  # Only process if segment rule exists
-                segment_name = f"Segment_{row['Segment_Count']}"
-                segment_rules[segment_name] = row['Segment_1']
+        row = segment_df.iloc[0]
+        segment_count = int(row['Segment_Count'])
+        for i in range(1, segment_count + 1):
+            segment_col = f"Segment_{i}"
+            if pd.notna(row.get(segment_col)):
+                segment_rules[segment_col] = row[segment_col]
         
         print("\nLoaded segment rules:")
         for segment, rule in segment_rules.items():
             print(f"{segment}: {rule}")
         
-        # Process segments
+        # Process segments using the built segment_rules
         result_df = process_segments(df, segment_rules)
         
-        # Save results
         output_path = "segmentation_results.csv"
         result_df.to_csv(output_path, index=False)
         print(f"\nSaved complete results to: {output_path}")
@@ -725,88 +733,95 @@ def hello():
 @app.route('/process_segments', methods=['GET'])
 def process_segments_api():
     try:
-        # Get URLs from request body
+        # 1) Process the data once. This call creates columns like Segment_1_result, Segment_2_result, Segment_3_result
         raw_data_path = "https://parthenon.customerinsights.ai/ds/FFdRNn6l8DQOaBI"
         segment_rules_path = "https://parthenon.customerinsights.ai/ds/DOoryx8crPRgcn4"
-
-        # if not raw_data_path or not segment_rules_path:
-        #     return jsonify({
-        #         'status': 'error',
-        #         'message': 'Both raw_data_path and segment_rules_path are required'
-        #     }), 400
-
-        # Process segmentation
         print("\n=== Starting Segmentation Processing ===\n")
         result_df = main(raw_data_path, segment_rules_path)
         
-        # Read segment rules
+        # 2) Read your segment rules (we assume a single row with Segment_1, Segment_2, Segment_3, etc.)
         segment_df = pd.read_csv(segment_rules_path)
-        segment_conditions = {}
+        row = segment_df.iloc[0]  # If multiple rows, pick the one you need
         
-        # Store all segment conditions
-        for _, row in segment_df.iterrows():
-            for i in range(1, 4):  # Process Segment_1, Segment_2, Segment_3
-                segment_col = f'Segment_{i}'
-                if pd.notna(row[segment_col]):
-                    segment_name = f"Segment_{row['Segment_Count']}_result"
-                    segment_conditions[segment_name] = row[segment_col]
-        
-        # Initialize dictionary to store all segments' data
+        # 3) Build a dictionary matching your table schema
+        #    Initialize all columns so the JSON always has them
         all_segments_data = {
-            "Process_DateTime": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            "Process_DateTime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            
+            "Segment_1_Condition": "",
+            "Segment_1_Name": "",
+            "Segment_1_NPIs": "",
+            "Segment_1_Count": "",
+            
+            "Segment_2_Condition": "",
+            "Segment_2_Name": "",
+            "Segment_2_NPIs": "",
+            "Segment_2_Count": "",
+            
+            "Segment_3_Condition": "",
+            "Segment_3_Name": "",
+            "Segment_3_NPIs": "",
+            "Segment_3_Count": ""
         }
         
-        results = []
-        for col in result_df.columns:
-            if col.endswith('_result'):
-                counts = result_df[col].value_counts()
-                if len(counts) > 0:
-                    matching_mask = (result_df[col] == 1)
-                    matching_npis = result_df.loc[matching_mask, 'NPI'].tolist()
-                    
-                    if matching_npis:
-                        # Get the actual condition
-                        actual_condition = segment_conditions.get(col, "Unknown Condition")
-                        segment_number = col.split('_')[1]
-                        
-                        # Add data for this segment
-                        all_segments_data[f"Segment_{segment_number}_Condition"] = actual_condition
-                        all_segments_data[f"Segment_{segment_number}_NPIs"] = str(matching_npis)
-                        all_segments_data[f"Segment_{segment_number}_Count"] = len(matching_npis)
-                        
-                        results.append({
-                            'segment': col,
-                            'condition': actual_condition,
-                            'count': len(matching_npis),
-                            'npis': matching_npis,
-                            'percentage': (len(matching_npis) / len(result_df)) * 100
-                        })
+        # Helper function to fill segment info
+        def fill_segment_info(segment_num: int):
+            seg_str = str(segment_num)
+            
+            # Condition & Name from your rules CSV
+            condition_col = f"Segment_{seg_str}"
+            name_col      = f"Segment_{seg_str}_Name"
+            result_col    = f"Segment_{seg_str}_result"
+            
+            # Condition and Name (from the rules CSV)
+            if condition_col in row:
+                all_segments_data[f"Segment_{seg_str}_Condition"] = str(row[condition_col])
+            if name_col in row:
+                all_segments_data[f"Segment_{seg_str}_Name"] = str(row[name_col])
+            
+            # If the process_segments(...) code created a column for this segment:
+            if result_col in result_df.columns:
+                matching_mask = (result_df[result_col] == 1)
+                # Convert NPIs to string so they can be stored in a text column
+                matching_npis = result_df.loc[matching_mask, 'NPI'].astype(str).tolist()
+                all_segments_data[f"Segment_{seg_str}_NPIs"] = ", ".join(matching_npis)
+                all_segments_data[f"Segment_{seg_str}_Count"] = str(len(matching_npis))
         
-        # Send data to API
+        # 4) Fill info for Segments 1, 2, and 3
+        fill_segment_info(1)
+        fill_segment_info(2)
+        fill_segment_info(3)
+        
+        # 5) Build the final JSON payload with a single row
         api_json = {
             "data": [all_segments_data]
         }
         
+        print("\nSending this single row to CIPArthenon API:")
+        print(api_json)
+        
+        # 6) POST to your CIPArthenon API
         response = requests.post(
             'https://ciparthenon-api.azurewebsites.net/apiRequest?account=demo&route=data/826395/insert?api_version=2022.01',
             json=api_json
         )
         
-        # Return results
+        # 7) Return a JSON response
         return jsonify({
-            'status': 'success',
-            'message': 'Processing completed successfully',
-            'results': results,
-            'api_response': response.json()
+            "status": "success",
+            "message": "Processing completed successfully",
+            "data_sent": all_segments_data,
+            "api_response": response.json()
         })
 
     except Exception as e:
         traceback.print_exc()
         return jsonify({
-            'status': 'error',
-            'message': str(e),
-            'traceback': traceback.format_exc()
+            "status": "error",
+            "message": str(e),
+            "traceback": traceback.format_exc()
         }), 500
+
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
