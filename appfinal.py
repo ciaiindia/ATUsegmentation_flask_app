@@ -20,6 +20,7 @@ from functools import reduce
 import requests
 from datetime import datetime
 import os
+import time
 
 class ExpressionEvaluator:
     def __init__(self, df: pd.DataFrame):
