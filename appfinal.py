@@ -806,6 +806,12 @@ def process_segments_api():
             json=api_json
         )
         
+        time.sleep(5)
+
+        trigger_json ={}
+        trigger_response = requests.post(f'https://ciparthenon-api.azurewebsites.net/apiRequest?account=demo&route=schedule/trigger/81639?api_version=2022.1',json=trigger_json)
+        print(trigger_response.text)
+        
         # 7) Return a JSON response
         return jsonify({
             "status": "success",
@@ -821,6 +827,63 @@ def process_segments_api():
             "message": str(e),
             "traceback": traceback.format_exc()
         }), 500
+
+
+
+@app.route('/cohort_summary', methods=['GET'])
+def cohort_summary():
+    try:
+        # Use the same data source URLs as before.
+        raw_data_path = "https://parthenon.customerinsights.ai/ds/FFdRNn6l8DQOaBI"
+        segment_rules_path = "https://parthenon.customerinsights.ai/ds/DOoryx8crPRgcn4"
+        
+        # Process segmentation to get the full result DataFrame.
+        result_df = main(raw_data_path, segment_rules_path)
+        
+        # Read the segment rules CSV.
+        segment_df = pd.read_csv(segment_rules_path)
+        row = segment_df.iloc[0]
+        
+        # Extract the Scenario value from the segment rules.
+        scenario_value = row.get("Scenario", "")
+        
+        # Create a list to hold the summary for each cohort.
+        cohorts = []
+        
+        # Assume there are 3 segments.
+        for i in range(1, 4):
+            # Get the cohort (segment) name from the CSV.
+            seg_name = str(row.get(f"Segment_{i}_Name", ""))
+            
+            # The segmentation process creates a column like "Segment_i_result".
+            result_col = f"Segment_{i}_result"
+            count = 0
+            if result_col in result_df.columns:
+                # Count rows with a value of 1 (meaning a match).
+                count = int(result_df[result_col].sum())
+            
+            # Append the cohort details including the scenario.
+            cohorts.append({
+                "cohort_name": seg_name,
+                "NPI_count": count,
+                "scenario": scenario_value
+            })
+        
+        # Return the summary with cohorts, each including the scenario.
+        return jsonify({
+            "status": "success",
+            "cohorts": cohorts
+        })
+    
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({
+            "status": "error",
+            "message": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
 
 
 if __name__ == '__main__':
