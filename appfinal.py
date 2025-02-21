@@ -831,7 +831,7 @@ def process_segments_api():
 
 
 
-@app.route('/cohort_summary', methods=['GET'])
+@app.route('/cohort_summaries', methods=['GET'])
 def cohort_summary():
     try:
         # Use the same data source URLs as before.
@@ -883,6 +883,82 @@ def cohort_summary():
             "message": str(e),
             "traceback": traceback.format_exc()
         }), 500
+
+
+@app.route('/cohort_summary', methods=['POST'])
+def cohort_summary():
+    try:
+        # Get the JSON payload from the request
+        payload = request.get_json()
+        if not payload or "segment_rules" not in payload:
+            return jsonify({
+                "status": "error",
+                "message": "Missing 'segment_rules' in payload"
+            }), 400
+
+        # Extract segment rules from the payload.
+        # Expecting a structure like:
+        # {
+        #     "segment_rules": {
+        #         "Scenario": "Some scenario text",
+        #         "Segment_1": "rule for segment 1",
+        #         "Segment_1_Name": "Segment 1 Name",
+        #         "Segment_2": "rule for segment 2",
+        #         "Segment_2_Name": "Segment 2 Name",
+        #         "Segment_3": "rule for segment 3",
+        #         "Segment_3_Name": "Segment 3 Name"
+        #     }
+        # }
+        segment_rules_payload = payload["segment_rules"]
+
+        # Use your existing raw data URL as before.
+        raw_data_path = "https://parthenon.customerinsights.ai/ds/FFdRNn6l8DQOaBI"
+        df = pd.read_csv(raw_data_path)
+
+        # Build a dictionary with only the rules (excluding keys used for names)
+        # For example, keys like "Segment_1", "Segment_2", etc.
+        segment_rules = {
+            key: value
+            for key, value in segment_rules_payload.items()
+            if key.startswith("Segment_") and not key.endswith("_Name") and key != "Scenario"
+        }
+
+        # Process segments using the process_segments function.
+        # Note that process_segments expects a DataFrame and a dictionary of rules.
+        result_df = process_segments(df, segment_rules)
+
+        # Extract scenario information from the payload
+        scenario_value = segment_rules_payload.get("Scenario", "")
+
+        # Build cohort summary using the segment names and result columns.
+        cohorts = []
+        for i in range(1, 4):
+            # Get the segment name from the payload (if provided)
+            seg_name = str(segment_rules_payload.get(f"Segment_{i}_Name", ""))
+            result_col = f"Segment_{i}_result"
+            count = 0
+            if result_col in result_df.columns:
+                # Count rows with a value of 1 (meaning a match)
+                count = int(result_df[result_col].sum())
+            cohorts.append({
+                "cohort_name": seg_name,
+                "NPI_count": count,
+                "scenario": scenario_value
+            })
+
+        return jsonify({
+            "status": "success",
+            "cohorts": cohorts
+        })
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({
+            "status": "error",
+            "message": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
 
 
 
