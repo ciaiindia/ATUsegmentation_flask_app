@@ -832,7 +832,7 @@ def process_segments_api():
 
 
 @app.route('/cohort_summaries', methods=['GET'])
-def cohort_summary():
+def cohort_summaries():
     try:
         # Use the same data source URLs as before.
         raw_data_path = "https://parthenon.customerinsights.ai/ds/FFdRNn6l8DQOaBI"
