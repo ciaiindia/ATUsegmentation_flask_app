@@ -807,7 +807,7 @@ def process_segments_api():
             json=api_json
         )
         
-        time.sleep(5)
+        time.sleep(45)
 
         trigger_json ={}
         trigger_response = requests.post(f'https://ciparthenon-api.azurewebsites.net/apiRequest?account=demo&route=schedule/trigger/81639?api_version=2022.1',json=trigger_json)
