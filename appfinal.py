@@ -64,18 +64,23 @@ class ExpressionEvaluator:
         """
         # Find all columns involved in the expression
         columns = re.findall(self.column_pattern, expression, re.IGNORECASE)
+        if not columns:
+            mask = pd.Series(True, index=df.index)
+        else:
+            columns = list(dict.fromkeys(columns))
         
-        # Get the actual column names (handling case-insensitivity)
-        cols_used = [self.get_column_case_insensitive(col) for col in columns]
-        
-        # Create a mask: True for rows where at least one involved column is non-null.
-        mask = ~df[cols_used].isna().all(axis=1)
-        
+            # Get the actual column names (handling case-insensitivity)
+            cols_used = [self.get_column_case_insensitive(col) for col in columns]
+            
+            # Create a mask: True for rows where at least one involved column is non-null.
+            mask = ~df[cols_used].isna().all(axis=1)
+            
         # Make a copy of the DataFrame for evaluation
         eval_df = df.copy()
+        if columns:
         
-        # For rows where at least one column is non-null, fill missing values with 0.
-        eval_df.loc[mask, cols_used] = eval_df.loc[mask, cols_used].fillna(0)
+            # For rows where at least one column is non-null, fill missing values with 0.
+            eval_df.loc[mask, cols_used] = eval_df.loc[mask, cols_used].fillna(0)
         
         # Evaluate the expression only on rows that have at least one non-null value
         evaluator = ExpressionEvaluator(eval_df.loc[mask])
@@ -222,6 +227,107 @@ class ExpressionEvaluator:
                 final_result = self.apply_comparison(final_result, op, float(val))
         
         return final_result.astype(int)
+    def evaluate_simple_condition(self, expression: str) -> pd.Series:
+        """
+        Handles simple column conditions like 'Tier= 1', 'Tier >=2 and Tier <= 3', 'Tier= 4'.
+        This function is designed for column names that don't follow the Q\d+[Xx_]\d+ pattern.
+        """
+        print(f"Evaluating simple column condition: {expression}")
+        
+        # First check if it's a compound condition with AND/OR
+        if re.search(r'\s+and\s+|\s+or\s+', expression, re.IGNORECASE):
+            # Normalize the expression
+            normalized = re.sub(r'\s+and\s+', ' AND ', expression, flags=re.IGNORECASE)
+            normalized = re.sub(r'\s+or\s+', ' OR ', normalized, flags=re.IGNORECASE)
+            
+            # Split by AND/OR
+            if ' AND ' in normalized:
+                parts = normalized.split(' AND ')
+                combine_op = 'AND'
+            else:
+                parts = normalized.split(' OR ')
+                combine_op = 'OR'
+            
+            # Evaluate each simple condition
+            results = []
+            for part in parts:
+                part = part.strip()
+                try:
+                    # Recursive call to evaluate each part
+                    result = self.evaluate_simple_condition(part)
+                    results.append(result)
+                except Exception as e:
+                    print(f"Error evaluating part '{part}': {str(e)}")
+                    raise
+            
+            # Combine results
+            if combine_op == 'AND':
+                return reduce(lambda x, y: x & y, results)
+            else:
+                return reduce(lambda x, y: x | y, results)
+        
+        # Pattern for simple column condition: ColName operator value
+        pattern = r'([A-Za-z0-9_\s]+)\s*([><=]+)\s*(\d+(?:\.\d*)?)'
+        match = re.match(pattern, expression, re.IGNORECASE)
+        
+        if match:
+            col, op, val = match.groups()
+            col = col.strip()
+            
+            # Debug information
+            print(f"Column requested: '{col}'")
+            print(f"Available columns: {self.df.columns.tolist()}")
+            
+            # Try to find the column with case-insensitive matching
+            col_found = None
+            for df_col in self.df.columns:
+                if df_col.strip().lower() == col.lower():
+                    col_found = df_col
+                    print(f"Found matching column: '{df_col}'")
+                    break
+            
+            if col_found:
+                # Debug the data more thoroughly
+                print(f"Column data type: {self.df[col_found].dtype}")
+                print(f"Column has NaN values: {self.df[col_found].isna().any()}")
+                print(f"First 5 values: {self.df[col_found].head(5).tolist()}")
+                print(f"Comparing with: {op} {val} (type: {type(float(val))})")
+                
+                # Handle null values
+                mask = ~self.df[col_found].isna()
+                result = pd.Series(0, index=self.df.index)
+                
+                # Print more debug info
+                print(f"Total rows: {len(self.df)}")
+                print(f"Non-null rows: {mask.sum()}")
+                
+                # Apply comparison with proper conversion to make sure numeric comparison works
+                valid_data = self.df[col_found][mask]
+                
+                # Ensure numeric comparison
+                try:
+                    numeric_data = pd.to_numeric(valid_data, errors='coerce')
+                    print(f"After numeric conversion - NaNs: {numeric_data.isna().sum()}")
+                    comparison_result = self.apply_comparison(numeric_data, op, float(val))
+                    print(f"Comparison result counts: {comparison_result.value_counts().to_dict()}")
+                    result[mask] = comparison_result
+                except Exception as e:
+                    print(f"Numeric conversion error: {str(e)}")
+                    # Fall back to string comparison if numeric fails
+                    string_result = self.apply_comparison(valid_data.astype(str), op, val)
+                    print(f"String comparison result counts: {string_result.value_counts().to_dict()}")
+                    result[mask] = string_result
+                
+                # Count results
+                print(f"Final result counts: {result.value_counts().to_dict()}")
+                return result
+            else:
+                print(f"Column '{col}' not found in DataFrame (case-insensitive search). Available columns:")
+                print(self.df.columns.tolist())
+                raise ValueError(f"Column not found: {col}")
+        
+        raise ValueError(f"Invalid simple condition format: {expression}")
+
     def evaluate_arithmetic_expression(self, expression: str) -> pd.Series:
         """Evaluate arithmetic expressions between columns with improved parentheses handling."""
         print(f"Evaluating arithmetic expression: {expression}")
@@ -414,6 +520,7 @@ class ExpressionEvaluator:
         print(f"Evaluating logical operation: {expression}")
         
         # Normalize the expression
+        expression = re.sub(r'\s+and\s+', ' AND ', expression, flags=re.IGNORECASE)
         expression = re.sub(r'\s+or\s+', ' OR ', expression, flags=re.IGNORECASE)
         expression = re.sub(r'\s+vs\s+', ' OR ', expression, flags=re.IGNORECASE)
         
@@ -426,16 +533,16 @@ class ExpressionEvaluator:
             combine_op = 'OR'
         
         # Get all columns involved
-        columns = []
-        for part in parts:
-            cols = re.findall(self.column_pattern, part, re.IGNORECASE)
-            columns.extend(cols)
+        # columns = []
+        # for part in parts:
+        #     cols = re.findall(self.column_pattern, part, re.IGNORECASE)
+        #     columns.extend(cols)
         
-        # Create mask for non-null values
-        mask = pd.Series(True, index=self.df.index)
-        for col in columns:
-            col_name = self.get_column_case_insensitive(col)
-            mask &= ~self.df[col_name].isna()
+        # # Create mask for non-null values
+        # mask = pd.Series(True, index=self.df.index)
+        # for col in columns:
+        #     col_name = self.get_column_case_insensitive(col)
+        #     mask &= ~self.df[col_name].isna()
         
         # Evaluate each part
         results = []
@@ -498,6 +605,14 @@ class ExpressionEvaluator:
         try:
             expression = expression.strip()
             print(f"\n🔍 Evaluating expression: '{expression}'")
+            try:
+                # Check if it's likely a simple column condition like "Tier= 1"
+                if re.search(r'^[A-Za-z0-9_]+\s*[><=]+\s*\d+', expression) or \
+                re.search(r'[A-Za-z0-9_]+\s*[><=]+\s*\d+\s+and\s+[A-Za-z0-9_]+\s*[><=]+\s*\d+', expression, re.IGNORECASE):
+                    return self.evaluate_simple_condition(expression)
+            except Exception as e:
+                # If it fails, continue with the existing logic
+                print(f"Simple condition evaluation failed, trying standard methods: {str(e)}")
             
             # Handle each type of expression
             if '%' in expression:
