@@ -918,7 +918,7 @@ def process_segments_api():
         
         # 6) POST to your CIPArthenon API
         response = requests.post(
-            'https://ciparthenon-api.azurewebsites.net/apiRequest?account=demo&route=data/826395/insert?api_version=2022.01',
+            'https://ciparthenon-api.azurewebsites.net/apiRequest?account=demo&route=data/831302/insert?api_version=2022.01',
             json=api_json
         )
         
